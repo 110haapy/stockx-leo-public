@@ -1,4 +1,4 @@
-import streamlit as st
+=import streamlit as st
 import requests
 import pandas as pd
 import time
@@ -127,9 +127,10 @@ def search_product_enhanced(style_id: str) -> Dict:
         }
 
 def get_market_info(product_id: str) -> Dict:
-    """获取销售信息（适配新版auth参数）"""
+    """获取销售信息（增强调试）"""
     token = get_token()
     auth = get_auth()
+    debug_info = {}
     try:
         res = requests.get(
             f"{BASE_URL}/product_market_info",
@@ -140,32 +141,39 @@ def get_market_info(product_id: str) -> Dict:
             },
             timeout=20
         )
+        debug_info["market接口状态码"] = res.status_code
+        debug_info["market接口原始返回"] = res.text[:1000]
+        
         if res.status_code != 200:
             return {
                 "最新成交价": 0,
                 "最低挂售价": 0,
                 "成交量": 0,
-                "市场状态": f"获取失败（状态码：{res.status_code}）"
+                "市场状态": f"获取失败（状态码：{res.status_code}）",
+                "调试信息": str(debug_info)
             }
         data = res.json().get("data", {})
         return {
             "最新成交价": data.get("lastSale", 0),
             "最低挂售价": data.get("lowestAsk", 0),
             "成交量": data.get("salesVolume", 0),
-            "市场状态": "正常"
+            "市场状态": "正常",
+            "调试信息": str(debug_info)
         }
     except Exception as e:
         return {
             "最新成交价": 0,
             "最低挂售价": 0,
             "成交量": 0,
-            "市场状态": f"异常：{str(e)}"
+            "市场状态": f"异常：{str(e)}",
+            "调试信息": str(debug_info)
         }
 
-def get_historical_price(product_id: str) -> (pd.DataFrame, str):
-    """获取历史价格+涨跌趋势（适配新版auth参数）"""
+def get_historical_price(product_id: str) -> (pd.DataFrame, str, dict):
+    """获取历史价格+涨跌趋势（增强调试）"""
     token = get_token()
     auth = get_auth()
+    debug_info = {}
     try:
         res = requests.get(
             f"{BASE_URL}/product_size_historical_price",
@@ -177,15 +185,18 @@ def get_historical_price(product_id: str) -> (pd.DataFrame, str):
             },
             timeout=25
         )
+        debug_info["history接口状态码"] = res.status_code
+        debug_info["history接口原始返回"] = res.text[:1000]
+        
         if res.status_code != 200 or not res.json().get("data"):
-            return pd.DataFrame(), "无历史数据"
+            return pd.DataFrame(), "无历史数据", debug_info
         
         df = pd.DataFrame(res.json()["data"])
         df["date"] = pd.to_datetime(df["date"])
         df = df.sort_values("date")
         
         if len(df) < 2:
-            return df, "数据不足（少于2条）"
+            return df, "数据不足（少于2条）", debug_info
         last = df.iloc[-1]["price"]
         prev = df.iloc[-2]["price"]
         change = last - prev
@@ -198,9 +209,9 @@ def get_historical_price(product_id: str) -> (pd.DataFrame, str):
         else:
             trend = "➡️ 持平"
         
-        return df, trend
+        return df, trend, debug_info
     except Exception as e:
-        return pd.DataFrame(), f"获取失败：{str(e)}"
+        return pd.DataFrame(), f"获取失败：{str(e)}", debug_info
 
 def batch_query(style_id_list: List[str]) -> List[Dict]:
     """批量查询主逻辑"""
@@ -222,6 +233,7 @@ def batch_query(style_id_list: List[str]) -> List[Dict]:
                 "最新成交价": 0, 
                 "最低挂售价": 0, 
                 "成交量": 0, 
+                "市场状态": "",
                 "涨跌趋势": "", 
                 "历史数据": pd.DataFrame()
             })
@@ -230,9 +242,19 @@ def batch_query(style_id_list: List[str]) -> List[Dict]:
             continue
         
         market = get_market_info(basic["商品ID"])
-        hist_df, trend = get_historical_price(basic["商品ID"])
+        hist_df, trend, hist_debug = get_historical_price(basic["商品ID"])
         
-        results.append({**basic, **market, "涨跌趋势": trend, "历史数据": hist_df})
+        # 合并所有调试信息
+        market_debug = market.pop("调试信息", "{}")
+        all_debug = {**eval(basic["调试信息"]), **eval(market_debug), **hist_debug}
+        
+        results.append({
+            **basic, 
+            **market, 
+            "涨跌趋势": trend, 
+            "历史数据": hist_df,
+            "调试信息": str(all_debug)
+        })
         
         progress_bar.progress((idx+1)/total)
         time.sleep(QUERY_DELAY)
@@ -243,9 +265,9 @@ def batch_query(style_id_list: List[str]) -> List[Dict]:
 
 # -------------------------- Web界面 --------------------------
 def main():
-    st.set_page_config(page_title="StockX批量分析工具（最终版）", layout="wide")
-    st.title("📊 StockX 批量货号分析智能体（最终版）")
-    st.caption("适配新版API | 多字段商品匹配 | 全流程调试日志")
+    st.set_page_config(page_title="StockX批量分析工具（最终调试版）", layout="wide")
+    st.title("📊 StockX 批量货号分析智能体（最终调试版）")
+    st.caption("适配新版API | 多字段商品匹配 | 全接口调试日志")
 
     with st.sidebar:
         st.header("⚙️ 配置中心")
@@ -311,7 +333,7 @@ def main():
         if valid_results:
             combine_df = pd.DataFrame()
             for r in valid_results:
-                hist_df, _ = get_historical_price(r["商品ID"])
+                hist_df, _ = get_historical_price(r["商品ID"])[:2]
                 df = hist_df.copy()
                 df["货号"] = r["货号"]
                 combine_df = pd.concat([combine_df, df])
@@ -322,7 +344,7 @@ def main():
             # 单个货号详情
             selected_gtin = st.selectbox("选择货号查看详情", [r["货号"] for r in valid_results])
             selected_r = next(r for r in valid_results if r["货号"] == selected_gtin)
-            hist_df, trend = get_historical_price(selected_r["商品ID"])
+            hist_df, trend = get_historical_price(selected_r["商品ID"])[:2]
             
             col1, col2 = st.columns(2)
             with col1:
