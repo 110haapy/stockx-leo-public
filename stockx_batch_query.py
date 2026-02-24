@@ -2,26 +2,21 @@ import streamlit as st
 import requests
 import pandas as pd
 import time
-import plotly.express as px
-from typing import List, Dict
 import io
 
 # -------------------------- 配置区 --------------------------
 BASE_URL = "https://api.spiderx.cc/api/stockx"
-QUERY_DELAY = 2.5  # 避免API限流
-TARGET_SIZE = "US 9"  # 目标查询尺码（可自行修改）
+QUERY_DELAY = 2.5
+TARGET_SIZE = "US 9"
 
 # -------------------------- 核心函数 --------------------------
 def get_token():
-    """自动读取秘钥中的Token"""
     return st.secrets.get("STOCKX_TOKEN", "")
 
 def get_auth():
-    """返回账号邮箱作为auth参数"""
     return "lis460225@gmail.com"
 
 def validate_token(token: str) -> bool:
-    """验证Token有效性"""
     try:
         res = requests.get(f"{BASE_URL}/ping", params={"token": token}, timeout=10)
         return res.status_code == 200
@@ -30,7 +25,6 @@ def validate_token(token: str) -> bool:
         return False
 
 def search_product_enhanced(style_id: str) -> Dict:
-    """步骤1：搜索商品，获取productId"""
     token, auth = get_token(), get_auth()
     debug_info = {"步骤": "搜索商品", "货号": style_id}
     
@@ -63,14 +57,7 @@ def search_product_enhanced(style_id: str) -> Dict:
         
         search_data = res.json()
         data_root = search_data.get("data", {})
-        
-        # 多字段查找商品列表
-        products = (
-            data_root.get("Featured", [])
-            or data_root.get("Results", [])
-            or data_root.get("Products", [])
-            or []
-        )
+        products = data_root.get("Featured", []) or data_root.get("Results", []) or []
         
         if not products:
             return {
@@ -81,7 +68,6 @@ def search_product_enhanced(style_id: str) -> Dict:
                 "调试信息": str(debug_info)
             }
         
-        # 优先精确匹配Style ID
         matched_product = None
         style_id_upper = style_id.strip().upper()
         for p in products:
@@ -111,7 +97,6 @@ def search_product_enhanced(style_id: str) -> Dict:
         }
 
 def get_product_detail(product_id: str) -> Dict:
-    """步骤2：获取商品详情，提取目标尺码的product_uuid（核心）"""
     token, auth = get_token(), get_auth()
     debug_info = {"步骤": "获取商品详情", "商品ID": product_id}
     
@@ -128,7 +113,7 @@ def get_product_detail(product_id: str) -> Dict:
             params={
                 "token": token,
                 "auth": auth,
-                "productId": product_id,
+                "product_id": product_id,
                 "country": "HK",
                 "currency_code": "USD"
             },
@@ -146,13 +131,12 @@ def get_product_detail(product_id: str) -> Dict:
             }
         
         data = res.json().get("data", {})
-        sizes = data.get("sizes", [])  # 官方文档核心字段：尺码列表
+        size_variants = data.get("sizeVariants", [])
         
-        # 查找目标尺码的uuid
         target_uuid = ""
-        for size in sizes:
-            if size.get("size") == TARGET_SIZE:
-                target_uuid = size.get("uuid", "")
+        for variant in size_variants:
+            if variant.get("size") == TARGET_SIZE:
+                target_uuid = variant.get("uuid", "")
                 break
         
         size_info = f"找到{TARGET_SIZE}尺码UUID: {target_uuid[:10]}..." if target_uuid else f"未找到{TARGET_SIZE}尺码"
@@ -169,7 +153,6 @@ def get_product_detail(product_id: str) -> Dict:
         }
 
 def get_market_data(uuid: str) -> Dict:
-    """步骤3：用uuid查询真实市场数据（官方推荐接口）"""
     token, auth = get_token(), get_auth()
     debug_info = {"步骤": "查询市场数据", "UUID": uuid[:10] + "..." if uuid else "空"}
     
@@ -183,13 +166,12 @@ def get_market_data(uuid: str) -> Dict:
         }
     
     try:
-        # 官方推荐接口：product_size_activity_new
         res = requests.get(
             f"{BASE_URL}/product_size_activity_new",
             params={
                 "token": token,
                 "auth": auth,
-                "product_uuid": uuid,
+                "productUuid": uuid,
                 "country": "HK",
                 "currency_code": "USD"
             },
@@ -209,10 +191,9 @@ def get_market_data(uuid: str) -> Dict:
             }
         
         data = res.json().get("data", {})
-        # 解析官方文档标准字段
         last_sale = data.get("lastSale", {}).get("price", 0)
         lowest_ask = data.get("lowestAsk", {}).get("price", 0)
-        sales_volume = len(data.get("sales", []))  # 成交记录数=成交量
+        sales_volume = len(data.get("sales", []))
         
         return {
             "最新成交价": last_sale,
@@ -231,7 +212,6 @@ def get_market_data(uuid: str) -> Dict:
         }
 
 def batch_query(style_id_list: List[str]) -> List[Dict]:
-    """批量执行完整数据链路"""
     results = []
     total = len(style_id_list)
     progress_bar = st.progress(0)
@@ -244,11 +224,9 @@ def batch_query(style_id_list: List[str]) -> List[Dict]:
         
         status_text.text(f"处理中 {idx+1}/{total}：{style_id}")
         
-        # 步骤1：搜索商品
         step1 = search_product_enhanced(style_id)
         
         if step1["状态"] != "查询成功":
-            # 搜索失败，补充默认字段避免KeyError
             results.append({
                 **step1,
                 "尺码信息": "",
@@ -261,20 +239,15 @@ def batch_query(style_id_list: List[str]) -> List[Dict]:
             time.sleep(QUERY_DELAY)
             continue
         
-        # 步骤2：获取尺码UUID
         step2 = get_product_detail(step1["商品ID"])
-        
-        # 步骤3：查询市场数据
         step3 = get_market_data(step2["uuid"])
         
-        # 合并所有调试信息
         combined_debug = (
             f"【1】搜索商品：{step1['调试信息']}\n"
             f"【2】获取详情：{step2['调试信息']}\n"
             f"【3】查询市场：{step3['调试信息']}"
         )
         
-        # 组装最终结果（确保所有字段都存在）
         results.append({
             "货号": style_id,
             "状态": step1["状态"],
@@ -295,11 +268,11 @@ def batch_query(style_id_list: List[str]) -> List[Dict]:
     status_text.text(f"✅ 完成！共处理 {len(results)} 个货号")
     return results
 
-# -------------------------- Web界面（修复KeyError） --------------------------
+# -------------------------- Web界面 --------------------------
 def main():
-    st.set_page_config(page_title="StockX批量分析工具（最终稳定版）", layout="wide")
-    st.title("📊 StockX 批量货号分析智能体（最终稳定版）")
-    st.caption(f"适配官方接口 | 目标尺码：{TARGET_SIZE} | 防KeyError报错")
+    st.set_page_config(page_title="StockX批量分析工具（最终修正版）", layout="wide")
+    st.title("📊 StockX 批量货号分析智能体（最终修正版）")
+    st.caption(f"严格遵循官方文档 | 目标尺码：{TARGET_SIZE}")
 
     with st.sidebar:
         st.header("⚙️ 配置中心")
@@ -314,11 +287,10 @@ def main():
                 st.error("❌ Token无效/API不可达！")
         
         st.divider()
-        st.info(f"📌 目标查询尺码：{TARGET_SIZE}\n如需修改，可在代码配置区调整")
+        st.info(f"📌 目标查询尺码：{TARGET_SIZE}")
         st.warning("⚠️ 新款商品可能无成交数据，显示0为正常现象")
 
     st.divider()
-    # 货号输入区域
     tab1, tab2 = st.tabs(["📝 手动输入", "📂 上传文件"])
     style_id_list = []
 
@@ -343,17 +315,14 @@ def main():
             except Exception as e:
                 st.error(f"文件读取失败：{str(e)}")
 
-    # 批量分析按钮
     if st.button("🚀 开始批量分析", type="primary", disabled=not (token and style_id_list)):
         with st.spinner("正在执行完整数据链路，请稍候..."):
             st.session_state["results"] = batch_query(style_id_list)
 
-    # 结果展示区域
     if "results" in st.session_state and st.session_state["results"]:
         results = st.session_state["results"]
         df_results = pd.DataFrame(results)
         
-        # 1. 核心结果表格（防KeyError：只展示存在的列）
         st.divider()
         st.header("📋 核心查询结果")
         desired_columns = ["货号", "商品名称", "尺码信息", "最新成交价", "最低挂售价", "成交量", "市场状态"]
@@ -364,23 +333,18 @@ def main():
         else:
             st.warning("暂无可展示的核心数据，请查看下方调试日志")
 
-        # 2. 全链路调试日志
         st.divider()
         st.header("🔍 全链路调试日志")
         for idx, res in enumerate(results):
             with st.expander(f"[{idx+1}] 货号：{res.get('货号', '未知')} | 状态：{res.get('市场状态', '未知')}"):
                 st.code(res.get("调试信息", "无调试信息"), language="json")
 
-        # 3. 数据导出功能
         st.divider()
         st.header("💾 导出数据")
-        
-        # 清理导出数据（移除大文本调试信息）
         df_export = df_results.copy()
         if "调试信息" in df_export.columns:
             df_export = df_export.drop(columns=["调试信息"])
         
-        # CSV导出
         csv_buffer = io.StringIO()
         df_export.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
         st.download_button(
@@ -389,19 +353,6 @@ def main():
             file_name=f"StockX批量查询结果_{int(time.time())}.csv",
             mime="text/csv"
         )
-        
-        # Excel导出
-        try:
-            excel_buffer = io.BytesIO()
-            df_export.to_excel(excel_buffer, index=False, engine="openpyxl")
-            st.download_button(
-                label="📥 导出Excel文件",
-                data=excel_buffer.getvalue(),
-                file_name=f"StockX批量查询结果_{int(time.time())}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        except Exception as e:
-            st.warning(f"Excel导出失败：{str(e)}，建议使用CSV导出")
 
 if __name__ == "__main__":
     main()
