@@ -29,7 +29,7 @@ def validate_token(token: str) -> bool:
         return False
 
 def search_product_enhanced(style_id: str) -> Dict:
-    """适配新版 /search_product 接口"""
+    """适配新版 /search_product 接口 + 多字段商品查找"""
     token = get_token()
     auth = get_auth()
     debug_info = {}
@@ -50,8 +50,9 @@ def search_product_enhanced(style_id: str) -> Dict:
             timeout=20
         )
         
+        # 调试信息：保留完整的返回结构（加长字符数）
         debug_info["搜索接口状态码"] = search_res.status_code
-        debug_info["搜索接口原始返回"] = search_res.text[:1000]
+        debug_info["搜索接口原始返回"] = search_res.text[:2000]  # 显示更多返回内容
         
         if search_res.status_code != 200:
             return {
@@ -63,26 +64,51 @@ def search_product_enhanced(style_id: str) -> Dict:
             }
         
         search_data = search_res.json()
-        products = search_data.get("data", {}).get("Featured", [])
+        data_root = search_data.get("data", {})
+        debug_info["data根字段结构"] = str(list(data_root.keys()))  # 显示所有子字段
+        
+        # 核心优化：从多个可能的字段查找商品列表，覆盖所有常见返回格式
+        products = []
+        # 遍历所有可能的商品列表字段
+        possible_fields = ["Featured", "Results", "Products", "products", "items", "list", "data"]
+        for field in possible_fields:
+            if field in data_root and isinstance(data_root[field], list) and len(data_root[field]) > 0:
+                products = data_root[field]
+                debug_info["有效商品列表字段"] = field
+                break
+        
+        # 兜底：如果还是没找到，直接取data下的第一个列表型数据
+        if not products and isinstance(data_root, dict):
+            for k, v in data_root.items():
+                if isinstance(v, list) and len(v) > 0:
+                    products = v
+                    debug_info["兜底匹配字段"] = k
+                    break
         
         if not products:
             return {
                 "货号": style_id,
-                "状态": "未找到商品（Featured列表为空）",
+                "状态": "未找到商品（所有列表均为空）",
                 "商品ID": "",
                 "商品名称": "",
                 "调试信息": str(debug_info)
             }
         
-        # 优先精确匹配Style ID
+        # 优先精确匹配Style ID（兼容大小写/空格）
         matched_product = None
+        style_id_upper = style_id.strip().upper()
         for p in products:
-            if str(p.get("styleId", "")).strip().upper() == style_id.strip().upper():
+            product_style_id = str(p.get("styleId", "")).strip().upper()
+            if product_style_id == style_id_upper:
                 matched_product = p
+                debug_info["精确匹配成功"] = True
                 break
+        
+        # 无精确匹配则取第一个结果
         if not matched_product:
             matched_product = products[0]
-            st.info(f"未找到精确匹配，取第一个结果：{matched_product.get('title', '未知')}")
+            debug_info["精确匹配失败"] = True
+            st.info(f"未找到精确匹配的Style ID，取第一个搜索结果：{matched_product.get('title', '未知')}")
 
         return {
             "货号": style_id,
@@ -101,7 +127,7 @@ def search_product_enhanced(style_id: str) -> Dict:
         }
 
 def get_market_info(product_id: str) -> Dict:
-    """获取销售信息"""
+    """获取销售信息（适配新版auth参数）"""
     token = get_token()
     auth = get_auth()
     try:
@@ -137,7 +163,7 @@ def get_market_info(product_id: str) -> Dict:
         }
 
 def get_historical_price(product_id: str) -> (pd.DataFrame, str):
-    """获取历史价格+涨跌趋势"""
+    """获取历史价格+涨跌趋势（适配新版auth参数）"""
     token = get_token()
     auth = get_auth()
     try:
@@ -217,9 +243,9 @@ def batch_query(style_id_list: List[str]) -> List[Dict]:
 
 # -------------------------- Web界面 --------------------------
 def main():
-    st.set_page_config(page_title="StockX批量分析工具（新版API适配版）", layout="wide")
-    st.title("📊 StockX 批量货号分析智能体（新版API适配版）")
-    st.caption("适配 /search_product 接口 | 支持Style ID查询 | 全流程调试日志")
+    st.set_page_config(page_title="StockX批量分析工具（最终版）", layout="wide")
+    st.title("📊 StockX 批量货号分析智能体（最终版）")
+    st.caption("适配新版API | 多字段商品匹配 | 全流程调试日志")
 
     with st.sidebar:
         st.header("⚙️ 配置中心")
@@ -233,7 +259,7 @@ def main():
                 st.error("❌ Token无效/API不可达！")
         
         st.divider()
-        st.warning("⚠️ 当前为调试版，会显示API原始返回数据，便于定位问题")
+        st.info("📌 支持货号类型：Style ID（如DD0587-002）、GTIN（数字码）")
 
     st.divider()
     tab1, tab2 = st.tabs(["📝 手动输入", "📂 上传文件"])
@@ -264,18 +290,21 @@ def main():
     if "results" in st.session_state and st.session_state["results"]:
         results = st.session_state["results"]
         
+        # 1. 完整结果表格
         st.divider()
         st.header("📋 查询结果（含调试日志）")
         df_show = pd.DataFrame(results)
         df_show["历史数据"] = df_show["历史数据"].apply(lambda x: "有数据" if not x.empty else "无数据")
         st.dataframe(df_show, use_container_width=True)
 
+        # 2. 详细调试信息（展开查看）
         st.divider()
         st.header("🔍 详细调试信息")
         for res in results:
             with st.expander(f"货号：{res['货号']} | 状态：{res['状态']}"):
                 st.code(res["调试信息"], language="json")
 
+        # 3. 价格走势对比
         st.divider()
         st.header("📈 价格走势对比")
         valid_results = [r for r in results if r["历史数据"] != "无数据"]
@@ -290,6 +319,7 @@ def main():
             fig = px.line(combine_df, x="date", y="price", color="货号", title="多货号价格走势对比")
             st.plotly_chart(fig, use_container_width=True)
 
+            # 单个货号详情
             selected_gtin = st.selectbox("选择货号查看详情", [r["货号"] for r in valid_results])
             selected_r = next(r for r in valid_results if r["货号"] == selected_gtin)
             hist_df, trend = get_historical_price(selected_r["商品ID"])
@@ -297,26 +327,29 @@ def main():
             col1, col2 = st.columns(2)
             with col1:
                 st.subheader(f"{selected_gtin} 历史走势")
-                fig_single = px.line(hist_df, x="date", y="price", title=trend)
+                fig_single = px.line(hist_df, x="date", y="price", title=selected_r["涨跌趋势"])
                 st.plotly_chart(fig_single, use_container_width=True)
             with col2:
                 st.subheader("核心销售数据")
                 st.metric("最新成交价", f"${selected_r['最新成交价']:.2f}")
                 st.metric("最低挂售价", f"${selected_r['最低挂售价']:.2f}")
                 st.metric("成交量", selected_r["成交量"])
-                st.metric("涨跌趋势", trend)
+                st.metric("涨跌趋势", selected_r["涨跌趋势"])
         else:
             st.warning("暂无有效历史价格数据（需先查询到商品）")
 
+        # 4. 导出核心数据
         st.divider()
         st.header("💾 导出核心数据")
         df_export = pd.DataFrame(results)
         df_export = df_export.drop(columns=["调试信息", "历史数据"], errors="ignore")
         
+        # CSV导出
         csv_buf = io.StringIO()
         df_export.to_csv(csv_buf, index=False, encoding="utf-8-sig")
         st.download_button("📥 导出CSV", csv_buf.getvalue(), f"StockX核心结果_{int(time.time())}.csv")
         
+        # Excel导出
         excel_buf = io.BytesIO()
         df_export.to_excel(excel_buf, index=False, engine="openpyxl")
         st.download_button("📥 导出Excel", excel_buf.getvalue(), f"StockX核心结果_{int(time.time())}.xlsx")
