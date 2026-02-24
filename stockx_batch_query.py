@@ -23,26 +23,39 @@ def validate_token(token: str) -> bool:
     except Exception:
         return False
 
-def search_product_by_gtin(gtin: str) -> Dict:
-    """按货号查询商品基础信息"""
+# ========== 关键修改：适配Style ID（如DD0587-002）查询 ==========
+def search_product_by_style_id(style_id: str) -> Dict:
+    """按Style ID/货号搜索商品（兼容数字GTIN和字符Style ID）"""
     token = get_token()
     try:
-        res = requests.get(
-            f"{BASE_URL}/search_product_by_gtin",
-            params={"gtin": gtin, "token": token},
+        # 改用search接口，支持Style ID关键词搜索
+        search_res = requests.get(
+            f"{BASE_URL}/search",
+            params={"q": style_id, "token": token},
             timeout=15
         )
-        if res.status_code != 200 or not res.json().get("data"):
-            return {"货号": gtin, "状态": "未找到商品", "商品ID": "", "商品名称": ""}
-        product = res.json()["data"][0]
+        if search_res.status_code != 200 or not search_res.json().get("data"):
+            return {"货号": style_id, "状态": "未找到商品", "商品ID": "", "商品名称": ""}
+        
+        # 优先匹配Style ID完全一致的商品，提升精准度
+        products = search_res.json()["data"]
+        matched_product = None
+        for p in products:
+            if p.get("styleId", "").strip().upper() == style_id.strip().upper():
+                matched_product = p
+                break
+        # 无精确匹配时取第一个结果
+        if not matched_product:
+            matched_product = products[0]
+
         return {
-            "货号": gtin,
+            "货号": style_id,
             "状态": "查询成功",
-            "商品ID": product.get("id"),
-            "商品名称": product.get("title", "")
+            "商品ID": matched_product.get("id"),
+            "商品名称": matched_product.get("title", "")
         }
     except Exception as e:
-        return {"货号": gtin, "状态": f"异常：{str(e)}", "商品ID": "", "商品名称": ""}
+        return {"货号": style_id, "状态": f"异常：{str(e)}", "商品ID": "", "商品名称": ""}
 
 def get_market_info(product_id: str) -> Dict:
     """获取销售信息（成交价/挂售价/销量）"""
@@ -113,8 +126,8 @@ def batch_query(gtin_list: List[str]) -> List[Dict]:
             continue
         status_text.text(f"查询中 {idx+1}/{total}：{gtin}")
         
-        # 1. 基础信息
-        basic = search_product_by_gtin(gtin)
+        # ========== 关键修改：调用新的Style ID查询函数 ==========
+        basic = search_product_by_style_id(gtin)
         if basic["状态"] != "查询成功":
             results.append({**basic, "最新成交价": 0, "最低挂售价": 0, "成交量": 0, "涨跌趋势": "", "历史数据": pd.DataFrame()})
             progress_bar.progress((idx+1)/total)
@@ -141,7 +154,7 @@ def batch_query(gtin_list: List[str]) -> List[Dict]:
 def main():
     st.set_page_config(page_title="StockX批量分析工具", layout="wide")
     st.title("📊 StockX 批量货号分析智能体（公开版）")
-    st.caption("支持：销售信息、历史走势、多货号对比、涨跌提醒")
+    st.caption("支持：Style ID/GTIN查询、销售信息、历史走势、多货号对比、涨跌提醒")
 
     # 侧边栏
     with st.sidebar:
@@ -156,7 +169,7 @@ def main():
                 st.error("❌ Token无效！")
         
         st.divider()
-        st.info("📌 使用说明：\n1. 输入货号（手动/上传）\n2. 点击查询\n3. 查看结果/导出数据")
+        st.info("📌 使用说明：\n1. 输入货号（Style ID/GTIN，每行一个）\n2. 点击查询\n3. 查看结果/导出数据")
 
     # 货号输入
     st.divider()
@@ -164,7 +177,7 @@ def main():
     gtin_list = []
 
     with tab1:
-        gtin_text = st.text_area("货号（每行一个）", placeholder="195244229298\n195244229304")
+        gtin_text = st.text_area("货号（Style ID/GTIN，每行一个）", placeholder="DD0587-002\n195244229298")
         if gtin_text:
             gtin_list = [x.strip() for x in gtin_text.split("\n") if x.strip()]
 
